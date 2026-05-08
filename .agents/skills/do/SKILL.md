@@ -146,13 +146,19 @@ That's it — just the local branch. No commit, no push, no PR. The branch is pu
 
 ### implement
 
-If the task is a bug fix: write a failing test first (e2e or unit, whichever is appropriate), then fix the bug.
+The test-first rule depends on what the change is:
 
-Otherwise: implement the planned changes. Prefer simplicity. Do the boring obvious thing.
+- **Bug fix**: write a failing test first (e2e or unit, whichever is appropriate), then fix the bug.
+- **New behavior** — anything that fails at runtime if it's wrong: new endpoints or routes, new services or modules, configuration paths, environment variables, secrets wiring, network connectivity, data persistence (migrations, preStart scripts, schema changes), auth/OIDC flows. Write an integration or unit test covering the new behavior **before** implementing. NixOS service modules need a VM test; new HTTP endpoints need an e2e or integration test; new modules with logic need at least a unit test.
+- **Otherwise** — documentation, refactors with no behavioral change, purely internal cleanups, dependency bumps that don't change behavior. Just implement the planned changes; no test-first requirement.
+
+If you're not sure which bucket the change falls into, treat it as new behavior. The cost of an unnecessary test is small; the cost of a silent deployment failure is not.
+
+Prefer simplicity. Do the boring obvious thing.
 
 **E2E coverage**: When the change introduces multiple user-facing paths (e.g., a dialog that appears under different conditions), write e2e scenarios for **each distinct path**. Enumerate the user-visible paths, then check that every one has a corresponding test.
 
-**Verify**: Code changes match the planned approach. All distinct user-facing paths have test coverage.
+**Verify**: Code changes match the planned approach. For bug fixes and new-behavior changes, at least one test exercises the changed behavior; multi-path changes have one test per distinct user-visible path. Refactor/docs/cleanup diffs are exempt.
 
 ---
 
@@ -225,22 +231,15 @@ The sub-agent already knows to read its skill file and follow that methodology; 
 
 **Model selection lives in the skill, not here.** Both `hickey/SKILL.md` and `lowy/SKILL.md` declare `model: sonnet` in their frontmatter — Claude Code honors this and runs the review on Sonnet to keep the per-task cost cheap; opencode/Codex ignore the field (it isn't part of the Agent Skills standard) and fall through to the active model, which is the right behavior for harnesses that don't have Sonnet. Don't pass `model:` at the `Agent` tool level — the skill frontmatter is the single source of truth.
 
-After both reviewers return, **audit every `Defer` disposition before acting**. `/do` is not optimizing for minimal diff — it is optimizing for the simpler artifact landing in `master`. A PR that grows from 50 lines to 400 because hickey caught a real fragmentation bug is a *better* PR, not a worse one; the alternative is shipping the complected version and trusting a "broader refactor" follow-up that statistically never happens. **The default disposition is "Fix in this PR" — even when the fix grows the diff substantially.**
+**No deferrals.** The hickey and lowy skills emit two dispositions: **Fix in this PR** and **No-op**. There is no Defer. `/do` is not optimizing for minimal diff — it is optimizing for the simpler artifact landing in `master`. A PR that grows from 50 lines to 400 because hickey caught a real fragmentation bug is a *better* PR, not a worse one; the alternative is shipping the complected version and trusting a "broader refactor" follow-up that statistically never happens.
 
-For every `Defer` the sub-agents returned, check the stated reason. Acceptable defers are narrow:
+If a sub-agent emits anything resembling a defer — `Defer #N`, "out of scope", "follow-up", "pre-existing, separate PR", "should be its own change", any phrasing that punts a finding to a future issue — treat it as a sub-agent rule violation. Flip the disposition to **Fix in this PR** unconditionally and apply the fix here. Do not create a follow-up issue, do not record the finding as deferred in the PR body, do not surface it as outstanding structural debt. The only way out of a finding is through it.
 
-- The fix requires a change outside this repository's control (upstream library, sister repo, external API).
-- The fix conflicts with concurrent in-flight work in another open PR on the same files.
-- The fix requires a coordinated migration (data, schema, dependency upgrade) that must not be coupled to this PR's release timeline.
+(`No-op` survives without code action — but it is narrow: the diff already deletes the offending code, or the finding is subsumed verbatim by another entry in the same review. Anything resembling deferred-work-for-later is a Fix, not a No-op.)
 
-Reasons that are **never** acceptable — flip the disposition to "Fix in this PR" and apply:
+Findings that genuinely require coordination outside this repo (upstream library bug, breaking dep upgrade, schema migration that must ship separately) shouldn't have surfaced as findings of this structural review in the first place; if one did, apply a local workaround or interface boundary in this PR rather than punt — and flag the upstream dependency in the PR description as a strategic note, not as a deferred finding.
 
-- "Broader refactor", "wider scope", "out of scope", "follow-up refactor", "separate PR" — restatements of "the diff would grow," not reasons.
-- "PR is getting big", "keep diff minimal" — `/do` does not constrain on diff size.
-- "Pre-existing", "not introduced by this PR" — only acceptable when paired with one of the three narrow reasons above; otherwise the cleanup belongs at the lines this branch is already touching.
-- Any `Defer` missing an issue link (e.g. "Defer — broader refactor" with no `#<issue>`) — the hickey/lowy skill files require issue links on defers, so a missing link means the sub-agent skipped the rule. Flip it unconditionally.
-
-For each flipped finding, apply it in this PR using the per-commit rules below. After the audit, only **No-op** and surviving (genuinely-narrow) `Defer #issue` entries are surfaced in the PR comment (see **create-pr**) without code action — every other finding lands as a commit.
+After the audit, every finding lands as a commit, except entries dispositioned **No-op**.
 
 **Apply each "Fix in this PR" finding as its own commit** — do not batch multiple findings into one commit. A reviewer reading the PR's commit history should be able to read one "address hickey finding: decomplect viewportDimensions" commit at a time and follow the structural refinement as a sequence, not decode a grab-bag diff. For each finding in turn:
 
@@ -252,7 +251,7 @@ For each flipped finding, apply it in this PR using the per-commit rules below. 
 
 **Under `--no-git`**: Skip the commit/push steps entirely. Apply fixes to the working tree and move on — the user will review the combined working-tree delta themselves. Record the step as passed with verification noting "--no-git: fixes applied to working tree, not committed."
 
-**Verify**: Both hickey and lowy produced review output using their respective skills, either through sub-agents or the main-model fallback. Every finding has an action recorded (fix, defer, or no-op). Every "Fix in this PR" finding has a corresponding commit on the feature branch (check via `git log origin/HEAD..HEAD --oneline`), except under `--no-git`. No unactioned findings.
+**Verify**: Both hickey and lowy produced review output using their respective skills, either through sub-agents or the main-model fallback. Every finding has an action recorded — either **Fix in this PR** or **No-op** (no defers; if the sub-agent emitted one, the audit step above flipped it to Fix in this PR). Every "Fix in this PR" finding has a corresponding commit on the feature branch (check via `git log origin/HEAD..HEAD --oneline`), except under `--no-git`. No unactioned findings; no deferred findings.
 
 ---
 
@@ -296,7 +295,9 @@ Use `git diff origin/HEAD...HEAD --name-only` to identify changed files and dete
 
 If changes are purely internal with no user-facing impact, unit tests may suffice — skip e2e if no relevant scenarios exist. If no test command is documented, skip with a note.
 
-**Verify**: Tests pass (exit code 0), or no relevant tests to run.
+**Coverage gap check**: After the test command exits 0, confirm at least one of the tests run actually exercised the new behavior (per the **implement** step's classification). A green run that didn't touch the changed code paths — e.g. a new NixOS service module with no corresponding VM test, or a new endpoint with no integration test — is a coverage gap, not a pass. Refactor/docs/internal-cleanup diffs are exempt. The implement step should have caught this; if it didn't, treat it as a real failure: write the missing test, then loop through **fmt** → **commit** → **test** as below.
+
+**Verify**: Tests pass (exit code 0) **and** the new behavior is covered, or the diff is exempt from the coverage check, or no relevant tests to run.
 **If failed** (max 4 attempts): Analyze the failure. If flaky, re-run. If real: fix → go to **fmt**, then retry.
 
 ---
@@ -317,7 +318,7 @@ Check whether a PR already exists for this branch (`gh pr view`).
 
    **MANDATORY**: Load the `forge-pr` skill (via Skill tool) BEFORE writing the PR title/body.
 
-2. **Post hickey/lowy results**: Post the hickey and lowy analysis as a PR comment using `gh pr comment` with a `## [Hickey/Lowy](https://kolu.dev/blog/hickey-lowy/) Analysis` header (the heading links to the blog post explaining the two lenses, mirroring how the final step status comment links `/do` to the agency repo). Always post when the steps ran, even if all findings are deferred or out of scope — reviewers should see the structural analysis.
+2. **Post hickey/lowy results**: Post the hickey and lowy analysis as a PR comment using `gh pr comment` with a `## [Hickey/Lowy](https://kolu.dev/blog/hickey-lowy/) Analysis` header (the heading links to the blog post explaining the two lenses, mirroring how the final step status comment links `/do` to the agency repo). Always post when the steps ran — reviewers should see the structural analysis even if every finding was a No-op.
 
    **Format the comment with a leading findings ledger.** Compose a single table from both sub-agents' Actions sections — one row per finding — so a reviewer can see disposition at a glance without parsing paragraphs. Put each lens's prose underneath as rationale:
 
@@ -327,7 +328,7 @@ Check whether a PR already exists for this branch (`gh pr view`).
    | # | Lens   | Finding                                  | Disposition       |
    |---|--------|------------------------------------------|-------------------|
    | 1 | Hickey | viewportDimensions complects two roles   | Fixed in this PR  |
-   | 2 | Lowy   | useViewport encapsulates ghost concern   | Deferred [#123]   |
+   | 2 | Lowy   | useViewport encapsulates ghost concern   | Fixed in this PR  |
 
    ### Hickey rationale
    <prose from the hickey sub-agent>
@@ -336,17 +337,15 @@ Check whether a PR already exists for this branch (`gh pr view`).
    <prose from the lowy sub-agent>
    ```
 
-   The Disposition cell mirrors the sub-agent's Actions disposition verbatim — **Fixed in this PR**, **Deferred [#N]** (linked), or **No-op** (deletion-only / subsumed by another finding). The Finding cell is the short bolded label the sub-agent emits at the start of each Actions entry. If both lenses produced zero findings, write a one-line "No findings — analysis below" instead of an empty table.
+   The Disposition cell mirrors the sub-agent's Actions disposition verbatim — **Fixed in this PR** or **No-op** (deletion-only / subsumed by another finding). There is no Deferred disposition; if a sub-agent emitted one, the audit step above flipped it to Fixed in this PR. The Finding cell is the short bolded label the sub-agent emits at the start of each Actions entry. If both lenses produced zero findings, write a one-line "No findings — analysis below" instead of an empty table.
 
 **If PR already exists** (followup runs, `--from` entry points):
 
 Re-check the PR title/body against current scope. If scope changed, update via `gh pr edit` per the `forge-pr` skill.
 
-**Surface deferred hickey/lowy findings**: If the hickey or lowy steps produced any **"Defer `#issue`"** actions, append a `> **Deferred:** #123, #124` line to the PR body (via `gh pr edit`) so reviewers see the outstanding structural debt. These are easy to miss in a PR comment — the description is what reviewers actually read.
-
 **Why this runs before `ci`**: The draft PR is the canonical home for CI status. Opening it before CI runs means CI checks land directly on the PR, reviewers see the run history as it happens, and a failing run doesn't leave an orphaned branch with red statuses and no PR to explain them. If retries exhaust in **ci**, the draft PR remains as the artifact of the failed attempt — visible, reviewable, and ready to resume via `--from ci-only`.
 
-**Verify**: Draft PR exists (`gh pr view` succeeds), PR title/body matches the delivered scope, hickey/lowy findings posted if any, and any deferred issues are linked in the body.
+**Verify**: Draft PR exists (`gh pr view` succeeds), PR title/body matches the delivered scope, hickey/lowy findings posted if any.
 
 ---
 
