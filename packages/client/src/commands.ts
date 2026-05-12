@@ -15,6 +15,8 @@ import type {
   PaletteValueInput,
 } from "./CommandPalette";
 import { type ActionContext, actionPaletteCommand } from "./input/actions";
+import { iconForCommand } from "./ui/agentDisplay";
+import { TerminalIcon } from "./ui/Icons";
 import { client } from "./wire";
 import { recentAgents, recentRepos } from "./wire";
 
@@ -28,7 +30,9 @@ function validateWorktreeName(name: string): string | null {
 }
 
 /** PaletteItems listing each recent agent command. Used by the Debug →
- *  "Recent agents" entry (phase 1 prefill flow). */
+ *  "Recent agents" entry (phase 1 prefill flow). Icons mirror the
+ *  worktree-naming leaf below so the same recent agents render with the
+ *  same visual treatment in both palettes. */
 function agentItems(
   agents: RecentAgent[],
   onPick: (command: string) => void,
@@ -38,6 +42,7 @@ function agentItems(
       kind: "action",
       name: a.command,
       onSelect: () => onPick(a.command),
+      icon: iconForCommand(a.command),
     }),
   );
 }
@@ -50,12 +55,18 @@ function worktreeAgentOptions(
   agents: RecentAgent[],
 ): (PaletteLabel | PaletteHint)[] {
   return [
-    { kind: "label", name: "Plain shell", data: undefined },
+    {
+      kind: "label",
+      name: "Plain shell",
+      data: undefined,
+      icon: TerminalIcon,
+    },
     ...agents.map(
       (a): PaletteLabel => ({
         kind: "label",
         name: a.command,
         data: a.command,
+        icon: iconForCommand(a.command),
       }),
     ),
   ];
