@@ -4,6 +4,7 @@
 import { makeEventListener } from "@solid-primitives/event-listener";
 import type { TerminalId, TerminalMetadata } from "kolu-common/surface";
 import { type Accessor, createEffect, on } from "solid-js";
+import { isAttentionState } from "../ui/agentDisplay";
 import { preferences } from "../wire";
 import { useStaleCheck } from "./staleness";
 import type { TerminalSubject } from "./terminalSubject";
@@ -77,7 +78,11 @@ export function useTerminalAlerts(deps: {
     prev: string | undefined,
     next: string | undefined,
   ) {
-    if (!activityAlerts() || next !== "waiting" || prev === "waiting") return;
+    if (!activityAlerts()) return;
+    // Fire on entry into the "needs-attention" class (waiting or
+    // awaiting_user). Treating the two as one class means we don't
+    // double-alert when the agent flips between them in one session.
+    if (!isAttentionState(next) || isAttentionState(prev)) return;
     alertForTerminal(id);
   }
 

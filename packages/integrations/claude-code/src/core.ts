@@ -24,6 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
+import { classifyByAwaiting } from "anyagent";
 import { type Logger, readTailLines } from "kolu-shared";
 import { match } from "ts-pattern";
 import type { ClaudeCodeInfo, TaskProgress } from "./schemas.ts";
@@ -177,6 +178,30 @@ type UsageShape = {
   cache_read_input_tokens?: number;
 };
 
+/** Minimal assistant `message.content[]` block shape — only the two
+ *  fields state derivation reads. The transcript layer carries the full
+ *  union (text, thinking, tool_use, etc.); live state derivation just
+ *  needs to ask "is this a `tool_use` block and which tool". */
+type ContentBlock = { type?: string; name?: string };
+
+/** Claude tool names whose pending invocation means the agent is
+ *  awaiting the human. Policy lives in `classifyByAwaiting`. */
+const AWAITING_USER_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
+function toolUseOrAwaitingUser(
+  content: ContentBlock[] | undefined,
+): "tool_use" | "awaiting_user" {
+  if (!Array.isArray(content)) return "tool_use";
+  let total = 0;
+  let awaiting = 0;
+  for (const block of content) {
+    if (block.type !== "tool_use") continue;
+    total++;
+    if (block.name && AWAITING_USER_TOOLS.has(block.name)) awaiting++;
+  }
+  return classifyByAwaiting(awaiting, total);
+}
+
 /** Derive Claude Code state from the last relevant JSONL message.
  *
  *  Walks backwards once, tracking two independent signals with different
@@ -210,6 +235,7 @@ export function deriveState(lines: string[]): {
           stop_reason?: string | null;
           model?: string | null;
           usage?: UsageShape;
+          content?: ContentBlock[];
         };
       } = JSON.parse(raw);
 
@@ -229,7 +255,7 @@ export function deriveState(lines: string[]): {
             model,
           }))
           .with({ type: "assistant", stopReason: "tool_use" }, () => ({
-            state: "tool_use" as const,
+            state: toolUseOrAwaitingUser(entry.message?.content),
             model,
           }))
           .with({ type: "assistant" }, () => ({

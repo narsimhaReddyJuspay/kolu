@@ -26,11 +26,11 @@ export {
   getLatestAssistantContextTokens,
   getSessionTaskProgress,
   getSessionTitle,
-  hasRunningTools,
   type OpenCodeSession,
   openDb,
   type ParsedMessageState,
   parseMessageState,
+  runningToolsBucket,
 } from "./core.ts";
 export {
   type OpenCodeInfo,

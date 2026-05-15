@@ -45,10 +45,10 @@ function taskComplete(turnId: string): string {
     payload: { type: "task_complete", turn_id: turnId },
   });
 }
-function funcCall(callId: string): string {
+function funcCall(callId: string, name = "shell"): string {
   return line({
     type: "response_item",
-    payload: { type: "function_call", call_id: callId },
+    payload: { type: "function_call", call_id: callId, name },
   });
 }
 function funcOutput(callId: string): string {
@@ -145,6 +145,35 @@ describe("parseRolloutState", () => {
     ];
     // No turn_id → not counted as a real task_started
     expect(parseRolloutState(lines)).toBeNull();
+  });
+
+  it.each([
+    "request_user_input",
+    "request_permissions",
+    "request_plugin_install",
+  ])("returns awaiting_user when the only open call is %s", (toolName) => {
+    const lines = [taskStarted("turn-1"), funcCall("call-A", toolName)];
+    expect(parseRolloutState(lines)).toBe("awaiting_user");
+  });
+
+  it("returns awaiting_user when every open call is some awaiting-user tool", () => {
+    const lines = [
+      taskStarted("turn-1"),
+      funcCall("call-A", "request_user_input"),
+      funcCall("call-B", "request_permissions"),
+    ];
+    expect(parseRolloutState(lines)).toBe("awaiting_user");
+  });
+
+  it("stays tool_use when request_user_input runs alongside another tool", () => {
+    // Mixed batch: a question is pending, but so is a shell call —
+    // there's still compute in flight, so the conservative state wins.
+    const lines = [
+      taskStarted("turn-1"),
+      funcCall("call-A", "request_user_input"),
+      funcCall("call-B", "shell"),
+    ];
+    expect(parseRolloutState(lines)).toBe("tool_use");
   });
 
   it("returns waiting when tail kept task_complete but chopped the start", () => {
