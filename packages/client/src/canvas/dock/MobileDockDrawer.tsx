@@ -99,11 +99,13 @@ const Row: Component<{
         // drag-to-dismiss from claiming the tap.
         onPointerDown={(e) => e.stopPropagation()}
         onClick={() => props.onSelect(props.id)}
-        class="w-full flex items-stretch gap-3 px-3 text-left transition-colors cursor-pointer active:bg-surface-2 border-b border-edge/15"
+        class="w-full flex items-stretch gap-3 px-3 text-left transition-[margin,border-radius,box-shadow,background-color,color] duration-300 ease-out cursor-pointer active:bg-surface-2 border-b border-edge/15 data-[active]:m-1.5 data-[active]:rounded-lg data-[active]:border-b-transparent data-[active]:bg-accent data-[active]:text-white data-[active]:[&_.text-fg-2]:text-white/85 data-[active]:[&_.text-fg-3]:text-white/70 data-[active]:shadow-[var(--dock-active-halo)] data-[active]:animate-[dock-row-activate_0.36s_cubic-bezier(0.34,1.45,0.6,1),dock-row-flash_0.48s_ease-out] motion-reduce:transition-none motion-reduce:data-[active]:animate-none"
         classList={{
           "py-3": live(),
           "py-2": !live(),
-          "bg-accent/15": active(),
+          // Parked dim for inactive rows only. Active treatment
+          // (lifted card + accent flood + pop-in animation) lives
+          // in the class string above as `data-[active]:*` variants.
           "opacity-60": props.bucket === "parked" && !active(),
         }}
       >
@@ -116,7 +118,11 @@ const Row: Component<{
           <div class="flex items-baseline justify-between gap-2 min-w-0">
             <span
               class="font-mono text-[0.6rem] font-bold uppercase tracking-[0.14em] truncate min-w-0"
-              style={{ color: info()?.repoColor }}
+              // Drop inline color when active so the row's white cascades
+              // through; otherwise paint the per-repo identity color.
+              style={{
+                color: active() ? undefined : info()?.repoColor,
+              }}
             >
               {info()?.key.group}
             </span>
@@ -126,7 +132,9 @@ const Row: Component<{
                 "text-[0.95rem]": live(),
                 "text-[0.8rem]": !live(),
               }}
-              style={{ color: info()?.annotationColor }}
+              style={{
+                color: active() ? undefined : info()?.annotationColor,
+              }}
             >
               <IntentMarkdownInline
                 markdown={annotationLine(

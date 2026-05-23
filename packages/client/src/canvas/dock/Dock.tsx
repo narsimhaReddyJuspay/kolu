@@ -299,7 +299,7 @@ const DockRow: Component<{
     <Show when={combined()}>
       {(c) => (
         <div
-          class="flex flex-row items-stretch border-b border-edge/15 last:border-b-0 relative"
+          class="flex flex-row items-stretch border-b border-edge/15 last:border-b-0 relative transition-[margin,border-radius,box-shadow] duration-300 ease-out data-[active]:m-1.5 data-[active]:rounded-lg data-[active]:border-b-transparent data-[active]:shadow-[var(--dock-active-halo)] data-[active]:animate-[dock-row-activate_0.36s_cubic-bezier(0.34,1.45,0.6,1),dock-row-flash_0.48s_ease-out] motion-reduce:transition-none motion-reduce:data-[active]:animate-none"
           data-testid="dock-row"
           data-terminal-id={props.id}
           data-bucket={props.bucket}
@@ -316,26 +316,12 @@ const DockRow: Component<{
               <span class="relative inline-flex rounded-full h-2 w-2 bg-alert" />
             </span>
           </Show>
-          {/* Active-terminal indicator — painted as an absolutely-
-           *  positioned overlay rather than a parent ring/tint so the
-           *  AwaitingCardBody's solid `theme().bg` (and the working
-           *  pill's, and the quiet row's) can't cover it. The overlay
-           *  sits at z-30, above the row body's z-0/z-10 content; the
-           *  `pointer-events-none` keeps clicks reaching the variant
-           *  body underneath. The 4-px left strip stays both as the
-           *  legacy testid hook and as an unambiguous "this row is
-           *  the active one" pin against narrow rail mode. */}
-          <Show when={active()}>
-            <span
-              data-testid="dock-row-active-indicator"
-              aria-hidden="true"
-              class="pointer-events-none absolute inset-0 z-30 ring-2 ring-inset ring-accent"
-            />
-            <span
-              aria-hidden="true"
-              class="pointer-events-none absolute left-0 top-0 bottom-0 w-1 bg-accent z-30"
-            />
-          </Show>
+          {/* Active-terminal indicator lives in index.css, keyed on
+           *  `[data-testid="dock-row"][data-active]` (set on the row
+           *  above). Lifted-card geometry + accent flood + one-shot
+           *  pop-in animation — see the "Active dock row" section in
+           *  `index.css`. Mobile drawer shares the same CSS block via
+           *  its own `[data-testid="mobile-dock-row"][data-active]`. */}
           <Show when={showShortcutHint()}>
             <span
               data-testid="dock-row-shortcut-hint"
@@ -430,11 +416,15 @@ const DockAnnotation: Component<{
   meta: TerminalMetadata;
   info: TerminalDisplayInfo;
   class: string;
+  active: boolean;
 }> = (props) => (
   <span
     data-testid="dock-annotation"
     class={`${props.class} truncate min-w-0`}
-    style={{ color: props.info.annotationColor }}
+    // Drop the inline color when active so the parent body's white
+    // cascades through — an inline annotationColor wins against
+    // `!important` via specificity; undefined removes the inline.
+    style={{ color: props.active ? undefined : props.info.annotationColor }}
   >
     <IntentMarkdownInline
       markdown={annotationLine(props.meta.intent, props.info.key.label)}
@@ -445,7 +435,9 @@ const DockAnnotation: Component<{
 /** Dispatches each row to its variant body. Bundling the variant switch
  *  in one place keeps `DockRow` shape uniform — every bucket has the
  *  same outer "rail + body" geometry regardless of which variant the
- *  body renders. */
+ *  body renders. Each body derives its own `active` state from the
+ *  terminal store — no prop threading needed since all three already
+ *  call `useTerminalStore()` and have `props.id`. */
 const RowBody: Component<{
   id: TerminalId;
   bucket: DockRowBucket;
@@ -489,6 +481,7 @@ const AwaitingCardBody: Component<{
   const store = useTerminalStore();
   const tileTheme = useTileTheme();
   const theme = createMemo(() => tileTheme(props.id));
+  const active = () => store.activeId() === props.id;
   const [value, setValue] = createSignal("");
 
   async function submit(e: SubmitEvent) {
@@ -520,10 +513,21 @@ const AwaitingCardBody: Component<{
     <div
       data-testid="dock-card"
       data-terminal-id={props.id}
-      class="px-2.5 py-2.5 flex flex-col gap-1.5"
+      class="px-2.5 py-2.5 flex flex-col gap-1.5 transition-colors duration-200 ease-out"
+      classList={{
+        // Active body floods to accent → main text inherits white,
+        // and the dim subtitle utilities (`text-fg-2`, `text-fg-3`)
+        // get brightened via descendant overrides so the PR line,
+        // timestamp, and agent-indicator token count stay readable
+        // against the accent flood. CSS specificity ensures the
+        // descendant arbitrary selectors win over the bare
+        // `.text-fg-*` utilities.
+        "text-white [&_.text-fg-2]:text-white/85 [&_.text-fg-3]:text-white/70":
+          active(),
+      }}
       style={{
-        "background-color": theme().bg,
-        color: theme().fg,
+        "background-color": active() ? "var(--color-accent)" : theme().bg,
+        color: active() ? undefined : theme().fg,
       }}
     >
       <button
@@ -535,7 +539,9 @@ const AwaitingCardBody: Component<{
         <div class="flex items-baseline justify-between gap-2 min-w-0">
           <span
             class="font-mono text-[0.7rem] font-bold uppercase tracking-[0.14em] truncate min-w-0"
-            style={{ color: props.info.repoColor }}
+            style={{
+              color: active() ? undefined : props.info.repoColor,
+            }}
           >
             {props.info.key.group}
           </span>
@@ -543,6 +549,7 @@ const AwaitingCardBody: Component<{
             meta={props.meta}
             info={props.info}
             class="text-[0.95rem] font-semibold leading-tight"
+            active={active()}
           />
         </div>
         <DockMetaRow meta={props.meta} />
@@ -583,23 +590,37 @@ const WorkingPillBody: Component<{
   const store = useTerminalStore();
   const tileTheme = useTileTheme();
   const theme = createMemo(() => tileTheme(props.id));
+  const active = () => store.activeId() === props.id;
   return (
     <button
       type="button"
       data-testid="dock-working"
       data-terminal-id={props.id}
       onClick={() => store.activate(props.id)}
-      class="w-full px-2.5 py-1 flex flex-col gap-0.5 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 text-left"
+      class="w-full px-2.5 py-1 flex flex-col gap-0.5 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 text-left transition-colors duration-200 ease-out"
+      classList={{
+        // Active body floods to accent → main text inherits white,
+        // and the dim subtitle utilities (`text-fg-2`, `text-fg-3`)
+        // get brightened via descendant overrides so the PR line,
+        // timestamp, and agent-indicator token count stay readable
+        // against the accent flood. CSS specificity ensures the
+        // descendant arbitrary selectors win over the bare
+        // `.text-fg-*` utilities.
+        "text-white [&_.text-fg-2]:text-white/85 [&_.text-fg-3]:text-white/70":
+          active(),
+      }}
       style={{
-        "background-color": theme().bg,
-        color: theme().fg,
+        "background-color": active() ? "var(--color-accent)" : theme().bg,
+        color: active() ? undefined : theme().fg,
       }}
       title="Jump to this terminal"
     >
       <div class="flex items-baseline justify-between gap-2 min-w-0">
         <span
           class="font-mono text-[0.65rem] font-bold uppercase tracking-[0.14em] truncate min-w-0"
-          style={{ color: props.info.repoColor }}
+          style={{
+            color: active() ? undefined : props.info.repoColor,
+          }}
         >
           {props.info.key.group}
         </span>
@@ -607,6 +628,7 @@ const WorkingPillBody: Component<{
           meta={props.meta}
           info={props.info}
           class="text-[0.85rem] font-semibold leading-tight"
+          active={active()}
         />
       </div>
       <DockMetaRow meta={props.meta} />
@@ -629,6 +651,7 @@ const QuietRowBody: Component<{
   bucket: DockRowBucket;
 }> = (props) => {
   const store = useTerminalStore();
+  const active = () => store.activeId() === props.id;
   const foreground = () =>
     props.meta.foreground?.title ?? props.meta.foreground?.name ?? null;
   return (
@@ -638,14 +661,24 @@ const QuietRowBody: Component<{
       data-terminal-id={props.id}
       data-bucket={props.bucket}
       onClick={() => store.activate(props.id)}
-      class="w-full px-2.5 py-1 flex flex-col gap-0.5 min-w-0 cursor-pointer text-left bg-surface-1/40 hover:bg-surface-2/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-      classList={{ "opacity-60": props.bucket === "parked" }}
+      class="w-full px-2.5 py-1 flex flex-col gap-0.5 min-w-0 cursor-pointer text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors duration-200 ease-out"
+      classList={{
+        "bg-surface-1/40 hover:bg-surface-2/50": !active(),
+        "bg-accent text-white [&_.text-fg-2]:text-white/85 [&_.text-fg-3]:text-white/70":
+          active(),
+        // Parked dim only when not active; an active parked row pops
+        // at full opacity, matching the existing mobile behavior at
+        // `MobileDockDrawer.tsx`.
+        "opacity-60": props.bucket === "parked" && !active(),
+      }}
       title={props.info.meta.cwd}
     >
       <div class="flex items-baseline gap-2 min-w-0">
         <span
           class="font-mono text-[0.6rem] font-bold uppercase tracking-[0.14em] truncate min-w-0"
-          style={{ color: props.info.repoColor }}
+          style={{
+            color: active() ? undefined : props.info.repoColor,
+          }}
         >
           {props.info.key.group}
         </span>
@@ -653,6 +686,7 @@ const QuietRowBody: Component<{
           meta={props.meta}
           info={props.info}
           class="text-[0.75rem]"
+          active={active()}
         />
         <Show when={formatTimeAgo(props.meta.lastActivityAt)}>
           {(label) => (
