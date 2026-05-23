@@ -62,6 +62,7 @@ import { useTileTheme } from "../useTileTheme";
 import { useViewPosture } from "../useViewPosture";
 import { resolvedPr } from "../dockModel";
 import { type DockRowBucket, rankDockRows } from "./dockRowRanking";
+import { SubCountChip } from "./SubCountChip";
 
 export type DockMode = "rail" | "cards";
 
@@ -362,6 +363,7 @@ const DockRow: Component<{
           data-agent-state={c().meta.agent?.state}
           data-active={active() ? "" : undefined}
           data-unread={unread() ? "" : undefined}
+          data-sub-count={c().info.subCount > 0 ? c().info.subCount : undefined}
         >
           <Show when={unread()}>
             <span
@@ -601,12 +603,21 @@ const AwaitingCardBody: Component<{
           >
             {props.info.key.group}
           </span>
-          <DockAnnotation
-            meta={props.meta}
-            info={props.info}
-            class="text-[0.95rem] font-semibold leading-tight"
-            active={active()}
-          />
+          <div class="flex items-baseline gap-2 min-w-0">
+            <DockAnnotation
+              meta={props.meta}
+              info={props.info}
+              class="text-[0.95rem] font-semibold leading-tight"
+              active={active()}
+            />
+            <Show when={props.info.subCount > 0}>
+              <SubCountChip
+                count={props.info.subCount}
+                active={active()}
+                testId="dock-sub-count"
+              />
+            </Show>
+          </div>
         </div>
         <DockMetaRow meta={props.meta} />
         <PrLine meta={props.meta} />
@@ -680,12 +691,21 @@ const WorkingPillBody: Component<{
         >
           {props.info.key.group}
         </span>
-        <DockAnnotation
-          meta={props.meta}
-          info={props.info}
-          class="text-[0.85rem] font-semibold leading-tight"
-          active={active()}
-        />
+        <div class="flex items-baseline gap-2 min-w-0">
+          <DockAnnotation
+            meta={props.meta}
+            info={props.info}
+            class="text-[0.85rem] font-semibold leading-tight"
+            active={active()}
+          />
+          <Show when={props.info.subCount > 0}>
+            <SubCountChip
+              count={props.info.subCount}
+              active={active()}
+              testId="dock-sub-count"
+            />
+          </Show>
+        </div>
       </div>
       <DockMetaRow meta={props.meta} />
       <PrLine meta={props.meta} />
@@ -744,12 +764,27 @@ const QuietRowBody: Component<{
           class="text-[0.75rem]"
           active={active()}
         />
-        <Show when={formatTimeAgo(props.meta.lastActivityAt)}>
-          {(label) => (
-            <span class="ml-auto font-mono text-[0.55rem] tabular-nums text-fg-3 shrink-0">
-              {label()}
-            </span>
-          )}
+        <Show
+          when={
+            props.info.subCount > 0 || formatTimeAgo(props.meta.lastActivityAt)
+          }
+        >
+          <div class="ml-auto flex items-baseline gap-2 shrink-0">
+            <Show when={props.info.subCount > 0}>
+              <SubCountChip
+                count={props.info.subCount}
+                active={active()}
+                testId="dock-sub-count"
+              />
+            </Show>
+            <Show when={formatTimeAgo(props.meta.lastActivityAt)}>
+              {(label) => (
+                <span class="font-mono text-[0.55rem] tabular-nums text-fg-3 shrink-0">
+                  {label()}
+                </span>
+              )}
+            </Show>
+          </div>
         </Show>
       </div>
       {/* Identity preservation for parked-but-known agent terminals:

@@ -26,6 +26,7 @@ import { formatTimeAgo, useStaleCheck } from "../../terminal/staleness";
 import { useTerminalStore } from "../../terminal/useTerminalStore";
 import { resolvedPr } from "../dockModel";
 import { type DockRowBucket, rankDockRows } from "./dockRowRanking";
+import { SubCountChip } from "./SubCountChip";
 
 const MobileDockDrawer: Component<{
   onSelect: (id: TerminalId) => void;
@@ -95,6 +96,7 @@ const Row: Component<{
         data-bucket={props.bucket}
         data-active={active() ? "" : undefined}
         data-unread={unread() ? "" : undefined}
+        data-sub-count={info()?.subCount || undefined}
         // stopPropagation on pointerdown keeps Corvu Drawer's
         // drag-to-dismiss from claiming the tap.
         onPointerDown={(e) => e.stopPropagation()}
@@ -126,23 +128,34 @@ const Row: Component<{
             >
               {info()?.key.group}
             </span>
-            <span
-              class="font-medium leading-tight truncate min-w-0"
-              classList={{
-                "text-[0.95rem]": live(),
-                "text-[0.8rem]": !live(),
-              }}
-              style={{
-                color: active() ? undefined : info()?.annotationColor,
-              }}
-            >
-              <IntentMarkdownInline
-                markdown={annotationLine(
-                  meta()?.intent,
-                  info()?.key.label ?? "",
+            <div class="flex items-baseline gap-2 min-w-0">
+              <span
+                class="font-medium leading-tight truncate min-w-0"
+                classList={{
+                  "text-[0.95rem]": live(),
+                  "text-[0.8rem]": !live(),
+                }}
+                style={{
+                  color: active() ? undefined : info()?.annotationColor,
+                }}
+              >
+                <IntentMarkdownInline
+                  markdown={annotationLine(
+                    meta()?.intent,
+                    info()?.key.label ?? "",
+                  )}
+                />
+              </span>
+              <Show when={info()?.subCount}>
+                {(n) => (
+                  <SubCountChip
+                    count={n()}
+                    active={active()}
+                    testId="mobile-dock-sub-count"
+                  />
                 )}
-              />
-            </span>
+              </Show>
+            </div>
           </div>
           {/* AgentIndicator surfaces on every row that carries a known
            *  agent — live (awaiting/working) AND parked. Without this
