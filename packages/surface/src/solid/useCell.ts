@@ -26,6 +26,7 @@
  * fail fast (no retry) per the plugin default.
  */
 
+import { debounce } from "@solid-primitives/scheduled";
 import { type Accessor, createEffect, createRoot, on } from "solid-js";
 import { createStore, reconcile, type SetStoreFunction } from "solid-js/store";
 import { STREAM_RETRY, type StreamingProcedure } from "../client";
@@ -64,6 +65,30 @@ export interface UseCellLocalOptions<T extends object, P = T> {
    *  at the call site (1) why `applyPatch` is insufficient and (2) the
    *  specific nested mutation required. */
   mergeIntoStore?: (setStore: SetStoreFunction<T>, patch: P) => void;
+  /** Trailing-debounce window (ms) for writes that opt in via
+   *  `patch(p, { coalesce: true })`. Such a write applies to the local store
+   *  synchronously (the instant-UI guarantee local authority exists for) but
+   *  defers the server `mutate` — opted-in writes within `coalesceMs` of each
+   *  other collapse into one server round-trip. The motivating case is a resize
+   *  splitter whose `onSizesChange` fires dozens of times/sec during a drag: the
+   *  local store must update every frame (a sibling reads it to track the
+   *  handle), but only the settled value needs to reach the server.
+   *
+   *  Coalescing is per-write, not per-cell: a plain `patch(p)` still flushes
+   *  immediately. This matters when one cell mixes volatilities — preferences
+   *  holds both continuous panel sizes (coalesce) and discrete toggles like
+   *  `colorScheme` (must persist immediately, or a quick reload loses them).
+   *
+   *  Pending patches accumulate via `applyPatch` (the same merge the cell runs
+   *  locally), so heterogeneous keys written inside one window both land in the
+   *  single flush; the payload stays a real patch `P`, never a full-value
+   *  snapshot. This requires `applyPatch` to be a pure spread-merge (missing
+   *  keys absent, not defaulted) — enforced at construction.
+   *
+   *  CONTRACT: a coalesced `patch` resolves after the *local* apply, not the
+   *  server ack; callers needing acknowledgement must gate on the server echo.
+   *  Flush failures surface via `onError`, not the returned promise. */
+  coalesceMs?: number;
   onError?: (err: Error) => void;
 }
 
@@ -71,12 +96,19 @@ export type UseCellOptions<T, P = T> =
   | UseCellServerOptions<T, P>
   | (T extends object ? UseCellLocalOptions<T, P> : never);
 
+/** Per-write options for `patch`. `coalesce` opts an individual write into the
+ *  cell's trailing-debounced server flush (requires `coalesceMs` configured);
+ *  it is the per-write half of the cadence decision — see `coalesceMs`. */
+export interface PatchOptions {
+  coalesce?: boolean;
+}
+
 export interface UseCellResult<T, P> {
   value: Accessor<T | undefined>;
   pending: Accessor<boolean>;
   error: Accessor<Error | undefined>;
   set: (next: T) => Promise<void>;
-  patch: (p: P) => Promise<void>;
+  patch: (p: P, opts?: PatchOptions) => Promise<void>;
   sub: Subscription<T>;
 }
 
@@ -91,6 +123,10 @@ export function useCell<Name extends string, T, P = T>(
     ) as unknown as UseCellResult<T, P>;
   }
   return useCellServer(cell, options as UseCellServerOptions<T, P>);
+}
+
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 /** Wrap a streaming procedure ref into the thunk shape `createSubscription`
@@ -124,7 +160,9 @@ function useCellServer<Name extends string, T, P>(
     pending: sub.pending,
     error: sub.error,
     set: (next) => callMutate(next as unknown as P),
-    patch: callMutate,
+    // Server authority has no local store to coalesce against — every write is
+    // a round-trip; the `opts` arg is accepted for signature parity and ignored.
+    patch: (p) => callMutate(p),
     sub,
   };
 }
@@ -173,6 +211,48 @@ function useCellLocal<Name extends string, T extends object, P>(
     setStore(reconcile(p as unknown as T));
   }
 
+  // Coalesced server flush (opt-in via `coalesceMs`). `applyLocal` has already
+  // run by the time we enqueue, so the store is current; we defer only the
+  // server round-trip. Patches merge through `applyPatch` so a flush carries
+  // every key touched in the window, not just the last write.
+  let pendingPatch: P | undefined;
+  function flushPending(): void {
+    const p = pendingPatch;
+    if (p === undefined) return;
+    pendingPatch = undefined;
+    void (async () => {
+      try {
+        await options.mutate(p);
+      } catch (err: unknown) {
+        options.onError?.(toError(err));
+      }
+    })();
+  }
+  // Coalescing merges queued patches through `applyPatch`; without it, two
+  // patches in one window would collapse to last-write-wins and silently drop
+  // the earlier keys. Enforce the documented precondition at construction so a
+  // misconfigured cell fails loudly here, not as missing data at runtime.
+  if (options.coalesceMs !== undefined && options.applyPatch === undefined) {
+    throw new Error(
+      "useCell: coalesceMs requires applyPatch — coalescing merges queued " +
+        "patches through it, so without it interleaved writes would be lost.",
+    );
+  }
+  const scheduleFlush =
+    options.coalesceMs !== undefined
+      ? debounce(flushPending, options.coalesceMs)
+      : undefined;
+  function enqueue(p: P): void {
+    const merge = options.applyPatch;
+    // `merge === undefined` can't happen once `scheduleFlush` is set (the guard
+    // above threw); the check is here only to narrow the optional for TS.
+    pendingPatch =
+      pendingPatch === undefined || merge === undefined
+        ? p
+        : (merge(pendingPatch as unknown as T, p) as unknown as P);
+    scheduleFlush?.();
+  }
+
   return {
     // Always read the seeded store — `options.initial` is visible to
     // consumers before the first server yield (matching the existing
@@ -186,9 +266,10 @@ function useCellLocal<Name extends string, T extends object, P>(
       applyLocal(next as unknown as P);
       await options.mutate(next as unknown as P);
     },
-    patch: async (p) => {
+    patch: async (p, opts) => {
       applyLocal(p);
-      await options.mutate(p);
+      if (opts?.coalesce && scheduleFlush) enqueue(p);
+      else await options.mutate(p);
     },
     sub,
   };

@@ -55,8 +55,15 @@ export const client = app.rpc;
 const _preferences = app.cells.preferences.use({
   authority: "local",
   initial: DEFAULT_PREFERENCES,
-  onError: (err) =>
-    toast.error(`Preferences subscription error: ${err.message}`),
+  // Debounce window for size writes that opt in via `{ coalesce: true }`. The
+  // rightPanel splitter's `onSizesChange` fires a patch per frame during a drag
+  // (and re-fires on Corvu panel re-registration), which storms the server.
+  // Coalescing is per-write, so discrete toggles (colorScheme, scrollLock) keep
+  // flushing immediately and survive a quick reload. See #1041.
+  coalesceMs: 150,
+  // Covers both subscription drops and coalesced-flush failures — a coalesced
+  // write's `mutate` failure surfaces here, not on `patch`'s returned promise.
+  onError: (err) => toast.error(`Preferences error: ${err.message}`),
 });
 
 /** Local-store accessor for user preferences — authoritative after the
@@ -68,10 +75,15 @@ export const preferences = (): Preferences =>
  *  `.pending()` / `.error()` (e.g. boot gating) rather than the value. */
 export const preferencesSub = _preferences.sub;
 
-/** Patch user preferences; reports failures via `toast`. */
-export function updatePreferences(patch: PreferencesPatch): void {
+/** Patch user preferences; reports failures via `toast`. Pass
+ *  `{ coalesce: true }` for high-frequency writes (panel-size drags) to
+ *  trailing-debounce the server round-trip — see the cell's `coalesceMs`. */
+export function updatePreferences(
+  patch: PreferencesPatch,
+  opts?: { coalesce?: boolean },
+): void {
   void _preferences
-    .patch(patch)
+    .patch(patch, opts)
     .catch((err: Error) =>
       toast.error(`Failed to save preferences: ${err.message}`),
     );

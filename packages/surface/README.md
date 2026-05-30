@@ -196,6 +196,22 @@ mergeIntoStore: (setStore, patch) => {
 }
 ```
 
+For high-frequency local-authority writes (a resize splitter firing a patch per frame during a drag), configure `coalesceMs` and opt the individual write in with `{ coalesce: true }` — the **server** round-trip is debounced while the **local** apply stays synchronous:
+
+```ts
+const prefs = useCell(preferences, {
+  authority: "local",
+  initial: DEFAULT_PREFERENCES,
+  applyPatch: deepMergePrefs,
+  coalesceMs: 150,           // debounce window for opted-in writes
+});
+
+prefs.patch({ rightPanel: { size } }, { coalesce: true }); // drag — debounced
+prefs.patch({ colorScheme: "dark" });                      // toggle — immediate
+```
+
+Coalescing is **per-write, not per-cell**: a plain `patch(p)` still flushes immediately, so a cell mixing volatilities (continuous panel sizes + discrete toggles) doesn't debounce the toggles — a quick reload after a toggle can't lose it. Opted-in patches accumulate through `applyPatch`, so heterogeneous keys written inside one window land in a single flush (the payload stays a patch, not a full-value snapshot) — this requires `applyPatch` to be a pure spread-merge, enforced at construction. A coalesced `patch` resolves after the local apply, not the server ack; flush failures surface via `onError`.
+
 ## Collection
 
 A keyed dictionary of typed values. Each key is independently observable; the live key set is its own subscription.
