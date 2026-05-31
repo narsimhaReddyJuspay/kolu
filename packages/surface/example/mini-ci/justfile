@@ -1,0 +1,42 @@
+# @kolu/surface mini-ci — standalone example.
+#
+# `just run [host]` runs the TUI. It probes the host's nix-system, resolves the
+# matching `mini-ci-runner` .drv, then drives the runner the drishti way via
+# @kolu/surface-nix-host's HostSession: nix copy the closure to the host
+# (skipped for localhost), realise + run it over ssh stdio. The default
+# pipeline runs real CI for the remote-process-monitor example.
+#
+#   just run                    local (host = localhost)
+#   just run user@host          remote (needs passwordless ssh + Nix on host)
+#   just run localhost --json   scriptable (or --headless)
+
+repo_root := justfile_directory() / "../../../.."
+nix_shell := if env('IN_NIX_SHELL', '') != '' { '' } else { 'nix develop ' + repo_root + ' --accept-flake-config -c' }
+
+# List available recipes
+default:
+    @just --list
+
+# Install pnpm deps (delegates to the workspace at the repo root)
+install:
+    cd {{ repo_root }} && {{ nix_shell }} pnpm install
+
+# Run the pipeline on `host` (default localhost). Probes arch, resolves the
+# mini-ci-runner .drv, and drives it via HostSession — like drishti's just dev.
+run host='localhost' *args: install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ justfile_directory() }}
+    sys=$({{ nix_shell }} pnpm exec tsx src/probe-arch.ts {{ host }})
+    echo "» host: {{ host }} (system=$sys)" >&2
+    drv=$(nix eval --raw "{{ repo_root }}#packages.$sys.mini-ci-runner.drvPath")
+    echo "» runner drv: $drv" >&2
+    MINI_CI_RUNNER_DRV="$drv" {{ nix_shell }} pnpm start -- {{ host }} {{ args }}
+
+# Typecheck this example only
+typecheck:
+    cd {{ justfile_directory() }} && {{ nix_shell }} pnpm typecheck
+
+# Run this example's unit tests
+test:
+    cd {{ justfile_directory() }} && {{ nix_shell }} pnpm test:unit
