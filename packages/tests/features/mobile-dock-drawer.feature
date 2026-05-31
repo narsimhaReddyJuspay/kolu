@@ -39,3 +39,21 @@ Feature: Mobile dock drawer
     When I tap the mobile dock backdrop
     Then the mobile dock sheet should not be visible
     And there should be no page errors
+
+  @mobile
+  Scenario: Dismissing the dock via the backdrop does not summon the soft keyboard
+    # Corvu's Drawer restores focus on close by default — to the element that
+    # was active before the drawer opened — which pops the soft keyboard if
+    # that element was the terminal textarea. Reproduce the real-mobile setup:
+    # tap the terminal so its textarea holds focus (keyboard up), open the dock
+    # without moving focus (a real button tap would focus the button and mask
+    # the bug; mobile taps don't move focus off the textarea), then dismiss via
+    # the backdrop. With restoreFocus={false} the textarea must stay unfocused.
+    When I tap the terminal canvas
+    And I arm the soft-keyboard focus probe
+    And I open the dock without moving focus
+    Then the mobile dock sheet should be visible
+    When I tap the mobile dock backdrop
+    Then the mobile dock sheet should not be visible
+    And xterm's helper textarea should not have been focused by closing the dock
+    And there should be no page errors

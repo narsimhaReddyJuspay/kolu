@@ -20,6 +20,31 @@ const XTERM_SCREEN = "[data-visible][data-terminal-id] .xterm-screen";
 const XTERM_TEXTAREA =
   "[data-visible][data-terminal-id] .xterm-helper-textarea";
 
+/** Read the document-capture focus counter armed by "I arm the soft-keyboard
+ *  focus probe", detach its listener, and return the count. Shared by every
+ *  Then-step that asserts a touch interaction did NOT focus the helper
+ *  textarea. The element-scoped probes (scroll, canceled-gesture) bind their
+ *  listener to a single textarea and tear down differently, so they don't use
+ *  this. */
+function teardownDocumentCaptureProbe(world: KoluWorld): Promise<number> {
+  return world.page.evaluate(() => {
+    const w = window as FocusProbeWindow;
+    // Guard against a vacuous pass: if the probe was never armed, the counter
+    // is undefined and `?? 0` would let the assertion succeed on nothing.
+    // The installed listener is the proof the arm step ran — its absence is a
+    // hard error, not a silent zero.
+    if (!w.__textareaFocusListener) {
+      throw new Error(
+        "Focus probe not armed — call 'I arm the soft-keyboard focus probe' before this assertion",
+      );
+    }
+    const value = w.__textareaFocusCount ?? 0;
+    document.removeEventListener("focus", w.__textareaFocusListener, true);
+    w.__textareaFocusListener = undefined;
+    return value;
+  });
+}
+
 When(
   "I tap the mobile key {string}",
   async function (this: KoluWorld, testId: string) {
@@ -337,19 +362,39 @@ When("I arm the soft-keyboard focus probe", async function (this: KoluWorld) {
 Then(
   "xterm's helper textarea should not have been focused by the terminal switch",
   async function (this: KoluWorld) {
-    const count = await this.page.evaluate(() => {
-      const w = window as FocusProbeWindow;
-      const value = w.__textareaFocusCount ?? 0;
-      if (w.__textareaFocusListener) {
-        document.removeEventListener("focus", w.__textareaFocusListener, true);
-      }
-      w.__textareaFocusListener = undefined;
-      return value;
-    });
+    const count = await teardownDocumentCaptureProbe(this);
     assert.strictEqual(
       count,
       0,
       `Expected no helper-textarea focus when switching tiles on touch (selection must not summon the keyboard), got ${count}`,
+    );
+  },
+);
+
+Then(
+  "xterm's helper textarea should not have been focused by closing the dock",
+  async function (this: KoluWorld) {
+    // Reuses the document-capture probe armed above. Corvu's Drawer defaults
+    // to restoreFocus=true, which on close re-focuses the element active
+    // before it opened — here the terminal textarea — popping the soft
+    // keyboard. The drawers pass restoreFocus={false}; this asserts the
+    // backdrop dismissal leaves the keyboard down.
+    //
+    // The restore fires asynchronously, AFTER the close transition — later
+    // than the "sheet not visible" wait — so reading the counter immediately
+    // would race ahead of the bug and pass vacuously. Actively wait for a pop
+    // (bounded); if none arrives the keyboard stayed down.
+    const popped = await this.page
+      .waitForFunction(
+        () => ((window as FocusProbeWindow).__textareaFocusCount ?? 0) > 0,
+        { timeout: 1500 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    const count = await teardownDocumentCaptureProbe(this);
+    assert.ok(
+      !popped && count === 0,
+      `Expected no helper-textarea focus when dismissing the dock on touch (closing must not summon the keyboard), got ${count}`,
     );
   },
 );
