@@ -49,7 +49,7 @@ A surface is reached through one of several **links**. A link maps "a way to rea
 
 - `websocketLink(ws)` (`@kolu/surface/links/websocket`) — over a WebSocket; the browser path.
 - `stdioLink({ read, write })` (`@kolu/surface/links/stdio`) — over a subprocess / ssh stdio pair.
-- `unixSocketLink({ socketPath })` (`@kolu/surface/links/unix-socket`) — over a local unix socket; the local-IPC path to a daemon on the same machine (kolu-tui → kolu-server's pty-host). Async (it dials), and returns `{ client, dispose }` because it owns the socket it opened; the serve side is `serveOverUnixSocket` (`@kolu/surface/unix-socket`). Same framing as the stdio pair — a connected `net.Socket` is just a Duplex.
+- `unixSocketLink({ socketPath })` (`@kolu/surface/links/unix-socket`) — over a local unix socket; the local-IPC path to a daemon on the same machine (kaval-tui → kaval / kolu-server's pty-host). Async (it dials), and returns `{ client, dispose }` because it owns the socket it opened; the serve side is `serveOverUnixSocket` (`@kolu/surface/unix-socket`). Same framing as the stdio pair — a connected `net.Socket` is just a Duplex.
 - `directLink(router)` (`@kolu/surface/links/direct`) — the **identity element**: in-process, no wire. Feed it `implementSurface(surface, deps).router` and every call invokes the handlers directly (microtask-deferred), so the consumer holds the exact `ContractRouterClient<contract>` a socket/ssh consumer would — byte-identical across a later transport swap. Useful for tests, single-process deployments, or the in-process phase of a service that will later be decoupled behind a socket. (Streams come back as async iterables, exactly as the wire-link clients yield them.)
 
 `createLoopbackPair()` (`@kolu/surface/loopback`) is **not** a link — it's the in-process transport *primitive* you feed into `stdioLink` + `serveOverStdio` to exercise the wire codec without forking (so it lives outside `links/`). The serve side is `implementSurface(surface, deps)` (→ a router) plus, for wire links, `serveOverStdio({ router, transport })`.
@@ -651,6 +651,10 @@ const bClient = directLink<typeof projected.surface.contract>(router);
 
 The sibling package [`@kolu/surface-mcp`](../surface-mcp) re-exposes any surface as an **MCP server** — point it at a live-surface client and a default-deny `expose` allowlist (each cell/stream/event a resource, each procedure a tool) plus optional bespoke `tools`, and `serveSurfaceAsMcp` builds the MCP server: the subscribe/teardown lifecycle, the zod→JSON-Schema bridge, and the resource/tool wiring are the package's. It's built on `projectSurface` for the curation step — shape a narrowed, observer-safe surface in surface-land, then expose *that*. See the package for full docs.
 
+### See also: `@kolu/surface-daemon`
+
+The sibling package [`@kolu/surface-daemon`](../surface-daemon) is the **daemon half** of the surface-daemon spine: the lifecycle mechanism every long-lived process that owns a unix socket and serves a typed surface repeats — `acquirePidGate` (the atomic single-instance gate, with `gatePid`/`isHolderLive` single-sourcing the gate's file format) and `daemonMain` (the gate → serve → teardown skeleton, parameterized over scope key, socket path, the surface `router`, and lifetime). It builds on this package's `serveOverUnixSocket` transport; [kaval](../kaval)'s `bin.ts` is a thin composition over it, with `odu serve` the planned second tenant. See the Atlas note `surface-daemon` for the design.
+
 ## API reference
 
 ### Descriptors (`@kolu/surface`)
@@ -774,7 +778,7 @@ createLoopbackPair(): {
 
 ### Unix-socket transport (`@kolu/surface/unix-socket`, `@kolu/surface/links/unix-socket`)
 
-The local-IPC member of the link family: a daemon serves its router on a per-user unix socket; short-lived CLI clients dial it. Each accepted connection is pumped through `serveOverStdio` (a connected `net.Socket` is a Duplex, so it IS the `{ read, write }` pair) — same base64+newline framing as the subprocess/ssh path, only the stream pair differs. Kolu's `kolu-tui` ↔ kolu-server pty-host is the headline consumer.
+The local-IPC member of the link family: a daemon serves its router on a per-user unix socket; short-lived CLI clients dial it. Each accepted connection is pumped through `serveOverStdio` (a connected `net.Socket` is a Duplex, so it IS the `{ read, write }` pair) — same base64+newline framing as the subprocess/ssh path, only the stream pair differs. Kolu's `kaval-tui` ↔ kaval (or kolu-server's pty-host) is the headline consumer.
 
 ```ts
 // Server (daemon process)

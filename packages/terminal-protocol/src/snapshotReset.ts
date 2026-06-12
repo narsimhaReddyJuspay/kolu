@@ -2,12 +2,12 @@
  * Undo every terminal mode a replayed `@xterm/addon-serialize` snapshot (or
  * the live deltas after it) may have switched on in the receiving terminal —
  * alt-buffer, mouse tracking, bracketed paste, app cursor/keypad modes. A
- * client that painted a snapshot onto a REAL terminal (kolu-tui attach) must
+ * client that painted a snapshot onto a REAL terminal (kaval-tui attach) must
  * emit this on every exit path, or it leaves the user's shell wrecked;
  * "restore" is much more than un-raw-ing stdin.
  *
  * SOURCE OF TRUTH: this list is the reciprocal of the mode vocabulary
- * `@xterm/addon-serialize` (0.14.x, pinned in `@kolu/pty-host`) can emit in a
+ * `@xterm/addon-serialize` (0.14.x, pinned in `kaval`) can emit in a
  * snapshot (`_serializeModes`). An xterm/serialize upgrade that starts
  * serializing new modes (kitty keyboard, sixel scrolling, …) must extend this
  * reset — audit it on every bump.

@@ -2,10 +2,7 @@ import type { IncomingMessage } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { serve } from "@hono/node-server";
 import { mountArtifactSdk } from "@kolu/artifact-sdk/server";
-import {
-  getPtyHostSocketPath,
-  servePtyHostOverUnixSocket,
-} from "@kolu/pty-host";
+import { getPtyHostSocketPath, servePtyHostOverUnixSocket } from "kaval";
 import { createDirServer } from "@kolu/serve-dir";
 import {
   gateStaleSocket,
@@ -83,7 +80,7 @@ const argv = cli({
     ptyHostSocket: {
       type: String,
       description:
-        "Path for the pty-host unix socket that kolu-tui connects to (default $XDG_RUNTIME_DIR/kolu/pty-host.sock).",
+        "Path for the pty-host unix socket that kaval-tui connects to (default $XDG_RUNTIME_DIR/kolu/pty-host.sock).",
     },
   },
   strictFlags: true,
@@ -394,9 +391,9 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-// --- pty-host unix socket (kolu-tui, R-4 Phase 1) ---
+// --- pty-host unix socket (kaval-tui, R-4 Phase 1) ---
 // One additive listener serving the SAME in-process pty-host router the web
-// path uses (./ptyHost.ts), so `kolu-tui` can list/snapshot the live PTYs from
+// path uses (./ptyHost.ts), so `kaval-tui` can list/snapshot the live PTYs from
 // the shell. Independent of the HTTP/WS server; its socket lives outside
 // koluRoot, so it gets its own exit-time cleanup.
 const ptyHostSocketListener = await servePtyHostOverUnixSocket({
