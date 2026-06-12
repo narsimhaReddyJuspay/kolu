@@ -16,24 +16,26 @@
  * consumer connects a socket-backed client of the identical type — so nothing
  * downstream changes. See `docs/atlas/src/content/atlas/pty-daemon.mdx`.
  *
- * Host-specific config (`shellDir`, `version`) is **injected**, not imported:
- * the package owns the PTY + the contract + the serving, but not kolu-server's
- * runtime paths. In-process the caller passes its own shell-dir; the future
- * daemon computes its own (from `kolu-shared`, the one relocation deferred to
- * that phase). Env/shell-init prep lives in the `spawn` handler because the
- * pty-host owns the shells it forks — across a socket the contract carries no
- * env, so the host fills it.
+ * Host-specific config (`rcDir`) is **injected**, not imported: the package
+ * owns the PTY + the contract + the serving, but not kolu-server's runtime
+ * paths. In-process the caller passes its own; the future daemon computes its
+ * own. The `spawn` handler derives **nothing** from policy — env, argv, and the
+ * wrapper rcfiles all arrive fully specified on the wire (B0, the kaval
+ * inversion). The host's only spawn-time jobs are *write the init files it is
+ * given under `rcDir`* (cleaned up when the PTY exits) and *spawn the argv
+ * verbatim*. Host facts a client needs to compose that policy — login shell,
+ * `$HOME`, platform, `rcDir` — are served read-only on `system.info`.
  */
 
 import { randomUUID } from "node:crypto";
+import { homedir, platform, userInfo } from "node:os";
 import { directLink } from "@kolu/surface/links/direct";
 import { implementSurface, inMemoryChannelByName } from "@kolu/surface/server";
 import type { ContractRouterClient } from "@orpc/contract";
 import { implement, ORPCError, type Router } from "@orpc/server";
-import { DEFAULT_SCROLLBACK } from "kolu-common/config";
-import { cleanEnv, koluIdentityEnv, prepareShellInit } from "kolu-pty";
-import type { Logger } from "kolu-shared";
 import { currentPtyHostIdentity } from "./buildId.ts";
+import { removeInitFiles, writeInitFiles } from "./initFiles.ts";
+import type { Logger } from "./logger.ts";
 import { createPtyHost, type PtyId } from "./ptyHost.ts";
 import {
   PTY_HOST_CONTRACT_VERSION,
@@ -48,14 +50,27 @@ export type PtyHostClient = ContractRouterClient<
   typeof ptyHostSurface.contract
 >;
 
+/** The host's own login-shell fact, with the host-side fallback formula owned
+ *  once: the live `$SHELL`, else the passwd entry's shell, else `/bin/sh`. The
+ *  result is contractually a non-empty string, so clients composing spawn
+ *  policy against `system.info` need no further `/bin/sh` fallback. */
+function hostShell(): string {
+  return process.env.SHELL || userInfo().shell || "/bin/sh";
+}
+
+/** The host's own `$HOME` fact, with the host-side fallback formula owned once:
+ *  the live `$HOME`, else the passwd entry's home, else `/`. */
+function hostHome(): string {
+  return process.env.HOME || homedir() || "/";
+}
+
 export interface InProcessPtyHostDeps {
   log: Logger;
-  /** Directory for the per-PTY wrapper rc files (`prepareShellInit`'s rcDir).
-   *  Injected by the host so this module needs no `kolu-server` runtime-path
-   *  import (which would be an import cycle). */
-  shellDir: string;
-  /** kolu version string, baked into each spawned shell's identity env. */
-  version: string;
+  /** Directory under which the host materialises `spawn`'s `initFiles` (the
+   *  per-PTY wrapper rc files). Injected by the host so this module needs no
+   *  `kolu-server` runtime-path import; surfaced to clients on `system.info`
+   *  so they can name init files and point `argv`/`env` at their paths. */
+  rcDir: string;
 }
 
 /** Serve `ptyHostSurface` over a fresh `createPtyHost` — the **transport-
@@ -66,7 +81,7 @@ export interface InProcessPtyHostDeps {
  *  every local PTY for as long as the router (and any client over it) lives —
  *  one host per call. */
 export function servePtyHost(deps: InProcessPtyHostDeps) {
-  const { log, shellDir, version } = deps;
+  const { log, rcDir } = deps;
   const host = createPtyHost({ log });
   const startedAt = Date.now();
 
@@ -166,39 +181,46 @@ export function servePtyHost(deps: InProcessPtyHostDeps) {
     },
     procedures: {
       terminal: {
-        // Env layering, ordered least → most authoritative (the pty-host
-        // spawns the shells, so it prepares their env):
-        //   1. cleanEnv()        — parent env passthrough (Nix devshell filter).
-        //   2. koluIdentityEnv() — Kolu's identity vars (stomps parent).
-        //   3. shellInit.env     — per-PTY overrides (e.g. ZDOTDIR for zsh).
+        // The spawn is fully specified by the client (B0): argv, env, and the
+        // wrapper rcfiles all arrive on the wire. The host derives nothing from
+        // policy — it materialises the init files under its own rcDir (removing
+        // them when the PTY exits) and spawns argv[0] with argv[1..] verbatim.
         spawn: async ({ input }) => {
-          const env = cleanEnv();
-          const shell = env.SHELL ?? "/bin/sh";
-          const cwd = input.cwd || env.HOME || "/";
-          Object.assign(env, koluIdentityEnv(version));
           // The caller mints the terminal id and passes it here so the
           // pty-host's PTY id == the caller's terminal id (reattach-by-id
           // across a restart, later). Generate one only if absent.
           const id = (input.id ?? randomUUID()) as PtyId;
-          const shellInit = prepareShellInit({
-            shell,
-            home: env.HOME,
-            terminalId: id,
-            rcDir: shellDir,
-          });
-          Object.assign(env, shellInit.env);
-          const res = host.spawn({
-            id,
-            shell,
-            args: shellInit.args,
-            env,
-            cwd,
-            cols: input.cols,
-            rows: input.rows,
-            scrollback: input.scrollback ?? DEFAULT_SCROLLBACK,
-            onDispose: shellInit.cleanup,
-          });
-          return { id: res.id, pid: res.pid, cwd };
+          // argv is `.min(1)` in the schema, so [0] is always present; the
+          // guard satisfies the type and turns a malformed wire frame into a
+          // clean error rather than spawning `undefined`.
+          const [program, ...args] = input.argv;
+          if (program === undefined) {
+            throw new ORPCError("BAD_REQUEST", { message: "argv is empty" });
+          }
+          const written = writeInitFiles(rcDir, input.initFiles);
+          let res: ReturnType<typeof host.spawn>;
+          try {
+            res = host.spawn({
+              id,
+              shell: program,
+              args,
+              env: input.env,
+              cwd: input.cwd,
+              cols: input.cols,
+              rows: input.rows,
+              // `createPtyHost` already applies the in-package default when a
+              // client omits this — pass it straight through, don't re-default.
+              scrollback: input.scrollback,
+              onDispose: () => removeInitFiles(rcDir, written),
+            });
+          } catch (err) {
+            // The PTY never came up, so its `onDispose` will never fire — clean
+            // up the init files we wrote for it here, before rethrowing, so a
+            // failed spawn leaves nothing behind under `rcDir`.
+            removeInitFiles(rcDir, written);
+            throw err;
+          }
+          return { id: res.id, pid: res.pid, cwd: input.cwd };
         },
         // No kill-then-wait here (that's a reattach concern): the consumer
         // aborts the exit tap before calling kill, so an intentional kill stays
@@ -263,6 +285,15 @@ export function servePtyHost(deps: InProcessPtyHostDeps) {
           identity: currentPtyHostIdentity(),
         }),
         heartbeat: async () => ({ ts: Date.now() }),
+        // The host's own facts, read-only — a client composes spawn policy
+        // against these (and for a remote host, this is the *only* way it
+        // learns the login shell / HOME / rcDir it must target).
+        info: async () => ({
+          shell: hostShell(),
+          home: hostHome(),
+          platform: platform(),
+          rcDir,
+        }),
       },
     },
   });

@@ -18,7 +18,6 @@
  * (used by `just dev` / `just test`).
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 
@@ -73,6 +72,8 @@ export function configureNixShellEnv(whitelist: string | undefined): void {
  * prepareShellInit.
  */
 export function cleanEnv(): Record<string, string> {
+  // Resolve the login shell once — used in both branches.
+  const loginShell = userInfo().shell || "/bin/sh";
   let env: Record<string, string>;
   if (envWhitelist) {
     env = {};
@@ -82,13 +83,12 @@ export function cleanEnv(): Record<string, string> {
     }
     // Nix sets SHELL to /nix/store/.../bash which lacks features like progcomp
     // that user bashrc files expect. Use the real login shell from /etc/passwd.
-    env.SHELL = userInfo().shell || "/bin/sh";
+    env.SHELL = loginShell;
   } else {
     env = { ...process.env } as Record<string, string>;
+    // Ensure SHELL is set — systemd user services may not have it.
+    env.SHELL ??= loginShell;
   }
-  // Ensure SHELL is set — systemd user services may not have it.
-  // Fall back to the login shell from /etc/passwd.
-  env.SHELL ??= userInfo().shell || "/bin/sh";
   return env;
 }
 
@@ -198,10 +198,20 @@ export const OSC2_PREEXEC_BASH_GUARD = [
 export const OSC2_PRECMD_BASH = `__kolu_title_precmd() { printf '\\033]2;%s\\033\\\\' "$(dirs +0)"; }`;
 export const OSC2_PRECMD_ZSH = `__kolu_title_precmd() { print -Pn '\\e]2;%(4~|…/%3~|%~)\\a'; }`;
 
-type SpawnInit = {
+/** A wrapper rcfile the host must materialise before the shell starts, named
+ *  relative to the host's `rcDir`. `prepareShellInit` only *plans* these — it
+ *  computes name + content but writes nothing; the pty-host writes them under
+ *  its own `rcDir` (the disk it owns, possibly on a remote machine) and removes
+ *  them when the PTY exits. */
+export type InitFile = { name: string; content: string };
+
+/** The spawn plan for one PTY: the shell `args`, an `env` override, and the
+ *  wrapper rcfiles to materialise. Pure data — no side effects, no cleanup
+ *  callback (the host owns the files' lifetime). */
+export type ShellInitPlan = {
   args: string[];
   env: Record<string, string>;
-  cleanup: () => void;
+  initFiles: InitFile[];
 };
 
 /**
@@ -220,14 +230,15 @@ type SpawnInit = {
  *     across shells but expressed differently (bash DEBUG trap vs zsh
  *     add-zsh-hook), so the lists aren't merge-able.
  *
- * The wrapper *mechanism* (--rcfile vs ZDOTDIR) is encapsulated in
- * `spawn`, which writes the assembled rcContent under `rcDir` and returns
- * spawn args + env override + cleanup.
+ * The wrapper *mechanism* (--rcfile vs ZDOTDIR) is encapsulated in `plan`,
+ * which names the assembled rcContent under `rcDir` and returns spawn args +
+ * env override + the init-file specs. It writes nothing — the pty-host
+ * materialises the files on the disk it owns.
  */
 type ShellInit = {
   replay: (home: string) => string[];
   hooks: string[];
-  spawn: (rcContent: string, terminalId: string, rcDir: string) => SpawnInit;
+  plan: (rcContent: string, terminalId: string, rcDir: string) => ShellInitPlan;
 };
 
 const BASH_INIT: ShellInit = {
@@ -254,13 +265,12 @@ const BASH_INIT: ShellInit = {
     // DEBUG trap persists across commands, so install once at source time.
     `trap '__kolu_preexec_dispatch' DEBUG`,
   ],
-  spawn: (rcContent, terminalId, rcDir) => {
-    const rcFile = join(rcDir, `bashrc-${terminalId}`);
-    writeFileSync(rcFile, rcContent);
+  plan: (rcContent, terminalId, rcDir) => {
+    const name = `bashrc-${terminalId}`;
     return {
-      args: ["--rcfile", rcFile],
+      args: ["--rcfile", join(rcDir, name)],
       env: {},
-      cleanup: () => rmSync(rcFile, { force: true }),
+      initFiles: [{ name, content: rcContent }],
     };
   },
 };
@@ -287,14 +297,12 @@ const ZSH_INIT: ShellInit = {
     `add-zsh-hook precmd __kolu_title_precmd`,
     `add-zsh-hook preexec __kolu_preexec`,
   ],
-  spawn: (rcContent, terminalId, rcDir) => {
-    const zdotdir = join(rcDir, `zdotdir-${terminalId}`);
-    mkdirSync(zdotdir, { recursive: true });
-    writeFileSync(join(zdotdir, ".zshrc"), rcContent);
+  plan: (rcContent, terminalId, rcDir) => {
+    const dir = `zdotdir-${terminalId}`;
     return {
       args: [],
-      env: { ZDOTDIR: zdotdir },
-      cleanup: () => rmSync(zdotdir, { recursive: true, force: true }),
+      env: { ZDOTDIR: join(rcDir, dir) },
+      initFiles: [{ name: join(dir, ".zshrc"), content: rcContent }],
     };
   },
 };
@@ -306,8 +314,10 @@ function selectShellInit(shell: string): ShellInit | null {
 }
 
 /**
- * Build the wrapper rcfile for the user's shell and return the spawn args
- * + env override + cleanup that go alongside it.
+ * Plan the wrapper rcfile for the user's shell: return the spawn args + env
+ * override + the init-file specs that go alongside it. **Pure** — it writes
+ * nothing. The pty-host materialises the returned `initFiles` under its own
+ * `rcDir` and removes them when the PTY exits.
  *
  * The wrapper layers two things in order: replay (user dotfiles the shell
  * would have auto-sourced) → hooks (kolu's OSC injection). The layering is
@@ -315,20 +325,22 @@ function selectShellInit(shell: string): ShellInit | null {
  * etc. can't clobber our hooks. PROMPT_COMMAND in env doesn't work because
  * the user's rc would overwrite it.
  *
- * `rcDir` is where the per-terminal bashrc / ZDOTDIR is written. The caller
- * owns the directory's lifetime — kolu-pty just writes into it.
+ * `rcDir` is the *host's* directory where the per-terminal bashrc / ZDOTDIR
+ * will be written — passed in (from the host's `system.info`) so the returned
+ * `args`/`env` can point at the resolved paths even when the host is a
+ * different machine than the one planning the spawn.
  */
 export function prepareShellInit(opts: {
   shell: string;
   home: string | undefined;
   terminalId: string;
   rcDir: string;
-}): SpawnInit {
-  const noop: SpawnInit = { args: [], env: {}, cleanup: () => {} };
+}): ShellInitPlan {
+  const noop: ShellInitPlan = { args: [], env: {}, initFiles: [] };
   const { shell, home, terminalId, rcDir } = opts;
   if (!home) return noop;
   const init = selectShellInit(shell);
   if (!init) return noop;
   const rcContent = [...init.replay(home), ...init.hooks].join("\n");
-  return init.spawn(rcContent, terminalId, rcDir);
+  return init.plan(rcContent, terminalId, rcDir);
 }
